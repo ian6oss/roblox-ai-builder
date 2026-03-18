@@ -1,0 +1,1 @@
+Make a pet simulator game. Players click to earn coins, hatch eggs to get pets, and can rebirth for multipliers. Add a shop and leaderboard.
