@@ -21,6 +21,7 @@ class Config:
     """Application configuration."""
 
     api_key: str = ""
+    auth_token: str = ""
     model: str = "claude-sonnet-4-6-20250514"
     max_tokens: int = 8192
     output_dir: Path = field(default_factory=lambda: DEFAULT_OUTPUT_DIR)
@@ -42,6 +43,7 @@ class Config:
 
             ai = data.get("ai", {})
             config.api_key = ai.get("api_key", config.api_key)
+            config.auth_token = ai.get("auth_token", config.auth_token)
             config.model = ai.get("model", config.model)
             config.max_tokens = ai.get("max_tokens", config.max_tokens)
 
@@ -59,6 +61,10 @@ class Config:
         if env_key:
             config.api_key = env_key
 
+        env_token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
+        if env_token:
+            config.auth_token = env_token
+
         env_output = os.environ.get("ROBLOX_AI_BUILDER_OUTPUT", "")
         if env_output:
             config.output_dir = Path(env_output)
@@ -72,6 +78,7 @@ class Config:
 
         content = f"""[ai]
 api_key = "{self.api_key}"
+auth_token = "{self.auth_token}"
 model = "{self.model}"
 max_tokens = {self.max_tokens}
 
@@ -86,9 +93,16 @@ language = "{self.language}"
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors."""
         errors = []
-        if not self.api_key:
+        if not self.api_key and not self.auth_token:
             errors.append(
-                "API key not set. Run `rab config set api-key <key>` "
-                "or set ANTHROPIC_API_KEY environment variable."
+                "No auth configured. Use one of:\n"
+                "  - `rab login` (API key via browser)\n"
+                "  - `rab auth` (OAuth for Claude Max subscribers)\n"
+                "  - Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN env var"
             )
         return errors
+
+    @property
+    def has_auth(self) -> bool:
+        """Check if any authentication method is configured."""
+        return bool(self.api_key or self.auth_token)

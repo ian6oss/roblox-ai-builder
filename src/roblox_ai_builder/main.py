@@ -71,7 +71,11 @@ def generate(
                 print_warning(e)
             console.print("[dim]Falling back to local parsing (no AI)...[/dim]")
         else:
-            ai_client = AIClient(api_key=config.api_key, model=config.model)
+            ai_client = AIClient(
+                api_key=config.api_key or None,
+                auth_token=config.auth_token or None,
+                model=config.model,
+            )
 
     try:
         result = _run_async(_generate_async(prompt, config, ai_client, preview_only))
@@ -278,6 +282,77 @@ def login() -> None:
     console.print("\n[bold]Ready![/bold] Try: [cyan]rab generate \"좀비 서바이벌 게임 만들어줘\"[/cyan]")
 
 
+@app.command()
+def auth() -> None:
+    """Authenticate with Claude Max/Pro subscription (OAuth).
+
+    For Claude Max/Pro subscribers who want to use their subscription
+    instead of paying per-token API costs.
+    """
+    print_header()
+    console.print(
+        Panel(
+            "[bold]Claude OAuth Setup (Max/Pro Subscribers)[/bold]\n\n"
+            "This uses your Claude subscription instead of per-token API billing.\n\n"
+            "1. Browser will open to Anthropic Console\n"
+            "2. Go to Settings → API Keys → Create key\n"
+            "3. Your Max/Pro subscription covers API usage\n\n"
+            "[dim]Alternatively, set ANTHROPIC_AUTH_TOKEN for OAuth token auth[/dim]",
+            border_style="cyan",
+        )
+    )
+
+    auth_method = Prompt.ask(
+        "Auth method",
+        choices=["api-key", "oauth-token"],
+        default="api-key",
+    )
+
+    if auth_method == "api-key":
+        open_browser = Prompt.ask(
+            "Open Anthropic Console?", choices=["y", "n"], default="y"
+        )
+        if open_browser == "y":
+            webbrowser.open("https://console.anthropic.com/settings/keys")
+            console.print("[dim]Browser opened...[/dim]\n")
+
+        api_key = Prompt.ask("Paste your API key")
+
+        console.print("[dim]Verifying...[/dim]")
+        try:
+            from anthropic import Anthropic
+            client = Anthropic(api_key=api_key)
+            client.messages.create(
+                model="claude-sonnet-4-6-20250514",
+                max_tokens=10,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            print_success("API key verified! Max/Pro subscription covers usage.")
+        except Exception as e:
+            print_warning(f"Verification failed: {e}")
+            console.print("[dim]Saving anyway...[/dim]")
+
+        config = Config.load()
+        config.api_key = api_key
+        config.save()
+
+    else:
+        console.print(
+            "\n[bold]OAuth Token:[/bold]\n"
+            "If you have an OAuth/auth token (e.g. from Claude Code session),\n"
+            "paste it below. Or set ANTHROPIC_AUTH_TOKEN env var.\n"
+        )
+        token = Prompt.ask("Paste your auth token")
+
+        config = Config.load()
+        config.auth_token = token
+        config.save()
+
+    from roblox_ai_builder.utils.config import DEFAULT_CONFIG_PATH
+    print_success(f"Auth saved to {DEFAULT_CONFIG_PATH}")
+    console.print("\n[bold]Ready![/bold] Try: [cyan]rab generate \"동물의숲 같은 RPG 만들어줘\"[/cyan]")
+
+
 @app.command(name="config")
 def config_cmd(
     action: str = typer.Argument(..., help="Action: set, show"),
@@ -289,21 +364,25 @@ def config_cmd(
 
     if action == "show":
         console.print("[bold]Current Configuration:[/bold]\n")
-        console.print(f"  API Key: {'***' + config.api_key[-4:] if config.api_key else '[red]NOT SET[/red]'}")
-        console.print(f"  Model:   {config.model}")
-        console.print(f"  Output:  {config.output_dir}")
+        console.print(f"  API Key:    {'***' + config.api_key[-4:] if config.api_key else '[red]NOT SET[/red]'}")
+        console.print(f"  Auth Token: {'***' + config.auth_token[-4:] if config.auth_token else '[dim]not set[/dim]'}")
+        console.print(f"  Auth:       {'[green]OK[/green]' if config.has_auth else '[red]NOT CONFIGURED[/red]'}")
+        console.print(f"  Model:      {config.model}")
+        console.print(f"  Output:     {config.output_dir}")
     elif action == "set":
         if not key or not value:
             print_error("Usage: rab config set <key> <value>")
             raise typer.Exit(1)
         if key == "api-key":
             config.api_key = value
+        elif key == "auth-token":
+            config.auth_token = value
         elif key == "model":
             config.model = value
         elif key == "output":
             config.output_dir = Path(value)
         else:
-            print_error(f"Unknown config key: {key}")
+            print_error(f"Unknown config key: {key}. Available: api-key, auth-token, model, output")
             raise typer.Exit(1)
         config.save()
         print_success(f"Set {key} = {'***' if key == 'api-key' else value}")

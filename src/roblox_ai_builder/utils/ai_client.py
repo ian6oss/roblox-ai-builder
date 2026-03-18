@@ -11,13 +11,25 @@ from roblox_ai_builder.utils.errors import AIGenerationError
 
 
 class AIClient:
-    """Async Claude API client."""
+    """Async Claude API client. Supports API key or OAuth token auth."""
 
     DEFAULT_MODEL = "claude-sonnet-4-6-20250514"
     MAX_TOKENS = 8192
 
-    def __init__(self, api_key: str, model: str | None = None):
-        self.client = AsyncAnthropic(api_key=api_key)
+    def __init__(
+        self,
+        api_key: str | None = None,
+        auth_token: str | None = None,
+        model: str | None = None,
+    ):
+        kwargs: dict = {}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if auth_token:
+            kwargs["auth_token"] = auth_token
+        # If neither is provided, AsyncAnthropic will check env vars:
+        # ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN
+        self.client = AsyncAnthropic(**kwargs)
         self.model = model or self.DEFAULT_MODEL
 
     async def generate(
