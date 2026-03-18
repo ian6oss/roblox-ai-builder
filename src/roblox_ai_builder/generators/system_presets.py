@@ -1627,6 +1627,386 @@ end
 
 return ShopService
 ''',
+    "EconomyService.server.lua": '''-- EconomyService: Manages in-game currency
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+
+local EconomyService = {}
+EconomyService.__index = EconomyService
+
+local DATASTORE_KEY = "Economy_v1"
+
+function EconomyService.init()
+    Players.PlayerAdded:Connect(function(player)
+        local leaderstats = player:FindFirstChild("leaderstats")
+        if not leaderstats then
+            leaderstats = Instance.new("Folder")
+            leaderstats.Name = "leaderstats"
+            leaderstats.Parent = player
+        end
+
+        local cash = Instance.new("IntValue")
+        cash.Name = "Cash"
+        cash.Value = 0
+        cash.Parent = leaderstats
+
+        local success, data = pcall(function()
+            local store = DataStoreService:GetDataStore(DATASTORE_KEY)
+            return store:GetAsync("player_" .. player.UserId)
+        end)
+
+        if success and data then
+            cash.Value = data.cash or 0
+        end
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        EconomyService.saveData(player)
+    end)
+end
+
+function EconomyService.addCash(player: Player, amount: number)
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local cash = leaderstats:FindFirstChild("Cash")
+        if cash then cash.Value = cash.Value + amount end
+    end
+end
+
+function EconomyService.removeCash(player: Player, amount: number): boolean
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local cash = leaderstats:FindFirstChild("Cash")
+        if cash and cash.Value >= amount then
+            cash.Value = cash.Value - amount
+            return true
+        end
+    end
+    return false
+end
+
+function EconomyService.getCash(player: Player): number
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local cash = leaderstats:FindFirstChild("Cash")
+        if cash then return cash.Value end
+    end
+    return 0
+end
+
+function EconomyService.saveData(player: Player)
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if not leaderstats then return end
+    local cash = leaderstats:FindFirstChild("Cash")
+    if not cash then return end
+
+    pcall(function()
+        local store = DataStoreService:GetDataStore(DATASTORE_KEY)
+        store:SetAsync("player_" .. player.UserId, { cash = cash.Value })
+    end)
+end
+
+return EconomyService
+''',
+    "LeaderboardService.server.lua": '''-- LeaderboardService: Manages player stats and leaderboard
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+
+local LeaderboardService = {}
+LeaderboardService.__index = LeaderboardService
+
+local DATASTORE_KEY = "PlayerStats_v1"
+
+function LeaderboardService.init()
+    Players.PlayerAdded:Connect(function(player)
+        local leaderstats = player:FindFirstChild("leaderstats")
+        if not leaderstats then
+            leaderstats = Instance.new("Folder")
+            leaderstats.Name = "leaderstats"
+            leaderstats.Parent = player
+        end
+
+        local stage = Instance.new("IntValue")
+        stage.Name = "Stage"
+        stage.Value = 1
+        stage.Parent = leaderstats
+
+        local success, data = pcall(function()
+            local store = DataStoreService:GetDataStore(DATASTORE_KEY)
+            return store:GetAsync("player_" .. player.UserId)
+        end)
+
+        if success and data then
+            stage.Value = data.stage or 1
+        end
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        LeaderboardService.saveData(player)
+    end)
+end
+
+function LeaderboardService.saveData(player: Player)
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if not leaderstats then return end
+
+    pcall(function()
+        local store = DataStoreService:GetDataStore(DATASTORE_KEY)
+        store:SetAsync("player_" .. player.UserId, {
+            stage = (leaderstats:FindFirstChild("Stage") and leaderstats.Stage.Value) or 1,
+        })
+    end)
+end
+
+function LeaderboardService.setStat(player: Player, statName: string, value: number)
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local stat = leaderstats:FindFirstChild(statName)
+        if stat then stat.Value = value end
+    end
+end
+
+return LeaderboardService
+''',
+    "CheckpointService.server.lua": '''-- CheckpointService: Manages player checkpoints and respawning
+local Players = game:GetService("Players")
+
+local CheckpointService = {}
+CheckpointService.__index = CheckpointService
+
+local playerCheckpoints: {[Player]: number} = {}
+
+function CheckpointService.init()
+    Players.PlayerAdded:Connect(function(player)
+        playerCheckpoints[player] = 1
+        player.CharacterAdded:Connect(function(character)
+            task.wait(0.5)
+            local checkpoint = workspace:FindFirstChild("Checkpoint_" .. playerCheckpoints[player])
+            if checkpoint then
+                character:SetPrimaryPartCFrame(checkpoint.CFrame + Vector3.new(0, 5, 0))
+            end
+        end)
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        playerCheckpoints[player] = nil
+    end)
+end
+
+function CheckpointService.setCheckpoint(player: Player, checkpointNumber: number)
+    if checkpointNumber > (playerCheckpoints[player] or 0) then
+        playerCheckpoints[player] = checkpointNumber
+    end
+end
+
+function CheckpointService.getCheckpoint(player: Player): number
+    return playerCheckpoints[player] or 1
+end
+
+return CheckpointService
+''',
+    "CraftingService.server.lua": '''-- CraftingService: Item crafting system
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local CraftingService = {}
+CraftingService.__index = CraftingService
+
+local RECIPES = {
+    {
+        id = "iron_sword",
+        name = "Iron Sword",
+        ingredients = {iron_ore = 3, wood = 1},
+        result = "iron_sword",
+        resultCount = 1,
+    },
+    {
+        id = "health_potion",
+        name = "Health Potion",
+        ingredients = {herb = 2, water = 1},
+        result = "potion_hp",
+        resultCount = 1,
+    },
+    {
+        id = "iron_armor",
+        name = "Iron Armor",
+        ingredients = {iron_ore = 5, leather = 2},
+        result = "iron_armor",
+        resultCount = 1,
+    },
+}
+
+function CraftingService.init()
+    local remotes = Instance.new("Folder")
+    remotes.Name = "CraftingRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local craftItem = Instance.new("RemoteFunction")
+    craftItem.Name = "CraftItem"
+    craftItem.Parent = remotes
+
+    local getRecipes = Instance.new("RemoteFunction")
+    getRecipes.Name = "GetRecipes"
+    getRecipes.Parent = remotes
+
+    craftItem.OnServerInvoke = function(player, recipeId)
+        return CraftingService.craft(player, recipeId)
+    end
+
+    getRecipes.OnServerInvoke = function(_player)
+        return RECIPES
+    end
+end
+
+function CraftingService.craft(player: Player, recipeId: string): (boolean, string)
+    local recipe = nil
+    for _, r in RECIPES do
+        if r.id == recipeId then recipe = r; break end
+    end
+    if not recipe then return false, "Recipe not found" end
+
+    -- Check ingredients (requires InventoryService integration)
+    -- For now, just return success placeholder
+    return true, "Crafted " .. recipe.name
+end
+
+function CraftingService.getRecipes(): {}
+    return RECIPES
+end
+
+return CraftingService
+''',
+    "GamePassService.server.lua": '''-- GamePassService: Roblox GamePass integration
+local Players = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local GamePassService = {}
+GamePassService.__index = GamePassService
+
+-- Configure your GamePass IDs here
+local GAME_PASSES = {
+    {id = 0, name = "VIP", perk = "2x_coins"},
+    {id = 0, name = "Speed Boost", perk = "speed_boost"},
+    {id = 0, name = "Extra Inventory", perk = "extra_slots"},
+}
+
+function GamePassService.init()
+    Players.PlayerAdded:Connect(function(player)
+        for _, pass in GAME_PASSES do
+            if pass.id > 0 then
+                local success, owns = pcall(function()
+                    return MarketplaceService:UserOwnsGamePassAsync(player.UserId, pass.id)
+                end)
+                if success and owns then
+                    GamePassService.applyPerk(player, pass.perk)
+                end
+            end
+        end
+    end)
+
+    MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passId, purchased)
+        if purchased then
+            for _, pass in GAME_PASSES do
+                if pass.id == passId then
+                    GamePassService.applyPerk(player, pass.perk)
+                    break
+                end
+            end
+        end
+    end)
+end
+
+function GamePassService.applyPerk(player: Player, perk: string)
+    if perk == "2x_coins" then
+        player:SetAttribute("CoinMultiplier", 2)
+    elseif perk == "speed_boost" then
+        local character = player.Character
+        if character then
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then humanoid.WalkSpeed = 24 end
+        end
+    elseif perk == "extra_slots" then
+        player:SetAttribute("MaxInventorySlots", 40)
+    end
+end
+
+function GamePassService.hasPass(player: Player, passId: number): boolean
+    local success, owns = pcall(function()
+        return MarketplaceService:UserOwnsGamePassAsync(player.UserId, passId)
+    end)
+    return success and owns or false
+end
+
+return GamePassService
+''',
+    "TradingService.server.lua": '''-- TradingService: Player-to-player item trading
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local TradingService = {}
+TradingService.__index = TradingService
+
+local activeTradeRequests: {[Player]: {target: Player, offeredItems: {[string]: number}}} = {}
+
+function TradingService.init()
+    local remotes = Instance.new("Folder")
+    remotes.Name = "TradingRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local requestTrade = Instance.new("RemoteFunction")
+    requestTrade.Name = "RequestTrade"
+    requestTrade.Parent = remotes
+
+    local acceptTrade = Instance.new("RemoteFunction")
+    acceptTrade.Name = "AcceptTrade"
+    acceptTrade.Parent = remotes
+
+    local cancelTrade = Instance.new("RemoteEvent")
+    cancelTrade.Name = "CancelTrade"
+    cancelTrade.Parent = remotes
+
+    requestTrade.OnServerInvoke = function(player, targetName, offeredItems)
+        return TradingService.requestTrade(player, targetName, offeredItems)
+    end
+
+    acceptTrade.OnServerInvoke = function(player, requesterName)
+        return TradingService.acceptTrade(player, requesterName)
+    end
+
+    cancelTrade.OnServerEvent:Connect(function(player)
+        activeTradeRequests[player] = nil
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        activeTradeRequests[player] = nil
+    end)
+end
+
+function TradingService.requestTrade(player: Player, targetName: string, offeredItems: {[string]: number}): (boolean, string)
+    local target = Players:FindFirstChild(targetName)
+    if not target then return false, "Player not found" end
+    if target == player then return false, "Cannot trade with yourself" end
+
+    activeTradeRequests[player] = {target = target, offeredItems = offeredItems}
+    return true, "Trade request sent to " .. targetName
+end
+
+function TradingService.acceptTrade(player: Player, requesterName: string): (boolean, string)
+    local requester = Players:FindFirstChild(requesterName)
+    if not requester then return false, "Requester not found" end
+
+    local request = activeTradeRequests[requester]
+    if not request or request.target ~= player then
+        return false, "No pending trade request"
+    end
+
+    -- Execute trade (requires InventoryService integration)
+    activeTradeRequests[requester] = nil
+    return true, "Trade completed"
+end
+
+return TradingService
+''',
     "WaveManager.server.lua": '''-- WaveManager: Wave-based enemy spawning system
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1780,6 +2160,12 @@ class SystemPresets:
             SystemType.COMBAT: "CombatService.server.lua",
             SystemType.SHOP: "ShopService.server.lua",
             SystemType.WAVE_SPAWNER: "WaveManager.server.lua",
+            SystemType.ECONOMY: "EconomyService.server.lua",
+            SystemType.LEADERBOARD: "LeaderboardService.server.lua",
+            SystemType.CHECKPOINT: "CheckpointService.server.lua",
+            SystemType.CRAFTING: "CraftingService.server.lua",
+            SystemType.GAMEPASS: "GamePassService.server.lua",
+            SystemType.TRADING: "TradingService.server.lua",
         }
 
         for system in systems:
