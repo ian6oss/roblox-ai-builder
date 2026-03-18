@@ -200,9 +200,12 @@ def presets(
             preset_info = {
                 "obby": "Obstacle course / Parkour game with checkpoints and leaderboard",
                 "tycoon": "Business tycoon with droppers, conveyors, and upgrades",
-                "simulator": "Simulator game with pets, zones, and progression",
-                "rpg": "RPG with combat, quests, inventory, and NPCs",
-                "fps": "First-person shooter with weapons and arenas",
+                "simulator": "Simulator game with pets, zones, rebirths, and progression",
+                "rpg": "RPG with quests, dialog, XP/leveling, and combat",
+                "fps": "First-person shooter with weapons, raycasting, and K/D tracking",
+                "survival": "Survival game with day/night, hunger/thirst, and wave defense",
+                "horror": "Horror game with flashlight, sanity, keys, and dark atmosphere",
+                "racing": "Racing game with laps, checkpoints, vehicles, and timing",
             }
             console.print(preset_info.get(show, "Custom preset"))
         else:
@@ -215,6 +218,9 @@ def presets(
             "simulator": ("Simulator", Genre.SIMULATOR),
             "rpg": ("RPG Adventure", Genre.RPG),
             "fps": ("FPS / Shooter", Genre.FPS),
+            "survival": ("Survival", Genre.SURVIVAL),
+            "horror": ("Horror", Genre.HORROR),
+            "racing": ("Racing", Genre.RACING),
         }
         for preset_id in available:
             name, _ = genre_map.get(preset_id, (preset_id, Genre.CUSTOM))

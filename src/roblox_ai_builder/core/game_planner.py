@@ -35,9 +35,9 @@ GENRE_PRESET_MAP: dict[Genre, str] = {
     Genre.SIMULATOR: "simulator",
     Genre.RPG: "rpg",
     Genre.FPS: "fps",
-    Genre.SURVIVAL: "fps",
-    Genre.HORROR: "rpg",
-    Genre.RACING: "obby",
+    Genre.SURVIVAL: "survival",
+    Genre.HORROR: "horror",
+    Genre.RACING: "racing",
     Genre.CUSTOM: "obby",
 }
 

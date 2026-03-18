@@ -283,6 +283,1138 @@ end
 return EconomyService
 ''',
     },
+    "simulator": {
+        "SimulatorCore.server.lua": '''-- SimulatorCore: Core simulator loop (click/tap to earn, zones, rebirths)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DataStoreService = game:GetService("DataStoreService")
+
+local SimulatorCore = {}
+SimulatorCore.__index = SimulatorCore
+
+local DATASTORE_KEY = "Simulator_v1"
+
+local playerData: {[Player]: {coins: number, multiplier: number, rebirths: number, zone: number}} = {}
+
+local ZONES = {
+    {name = "Starter Field", minPower = 0, reward = 1},
+    {name = "Forest", minPower = 50, reward = 3},
+    {name = "Desert", minPower = 200, reward = 8},
+    {name = "Volcano", minPower = 1000, reward = 25},
+    {name = "Space", minPower = 5000, reward = 100},
+}
+
+function SimulatorCore.init()
+    local remotes = Instance.new("Folder")
+    remotes.Name = "SimulatorRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local clickRemote = Instance.new("RemoteEvent")
+    clickRemote.Name = "Click"
+    clickRemote.Parent = remotes
+
+    local rebirthRemote = Instance.new("RemoteFunction")
+    rebirthRemote.Name = "Rebirth"
+    rebirthRemote.Parent = remotes
+
+    clickRemote.OnServerEvent:Connect(function(player)
+        SimulatorCore.onClickadd(player)
+    end)
+
+    rebirthRemote.OnServerInvoke = function(player)
+        return SimulatorCore.rebirth(player)
+    end
+
+    Players.PlayerAdded:Connect(function(player)
+        local data = SimulatorCore.loadData(player)
+        playerData[player] = data
+
+        local leaderstats = Instance.new("Folder")
+        leaderstats.Name = "leaderstats"
+        leaderstats.Parent = player
+
+        local coins = Instance.new("IntValue")
+        coins.Name = "Coins"
+        coins.Value = data.coins
+        coins.Parent = leaderstats
+
+        local rebirths = Instance.new("IntValue")
+        rebirths.Name = "Rebirths"
+        rebirths.Value = data.rebirths
+        rebirths.Parent = leaderstats
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        SimulatorCore.saveData(player)
+        playerData[player] = nil
+    end)
+end
+
+function SimulatorCore.onClickadd(player: Player)
+    local data = playerData[player]
+    if not data then return end
+
+    local zone = ZONES[data.zone] or ZONES[1]
+    local earned = zone.reward * data.multiplier
+    data.coins = data.coins + earned
+
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local coins = leaderstats:FindFirstChild("Coins")
+        if coins then coins.Value = data.coins end
+    end
+end
+
+function SimulatorCore.rebirth(player: Player): (boolean, string)
+    local data = playerData[player]
+    if not data then return false, "No data" end
+
+    local rebirthCost = 10000 * (data.rebirths + 1)
+    if data.coins < rebirthCost then
+        return false, "Need " .. rebirthCost .. " coins"
+    end
+
+    data.coins = 0
+    data.rebirths = data.rebirths + 1
+    data.multiplier = 1 + data.rebirths * 0.5
+
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local coins = leaderstats:FindFirstChild("Coins")
+        if coins then coins.Value = 0 end
+        local rebirths = leaderstats:FindFirstChild("Rebirths")
+        if rebirths then rebirths.Value = data.rebirths end
+    end
+
+    return true, "Rebirth successful! Multiplier: " .. data.multiplier .. "x"
+end
+
+function SimulatorCore.loadData(player: Player): {coins: number, multiplier: number, rebirths: number, zone: number}
+    local default = {coins = 0, multiplier = 1, rebirths = 0, zone = 1}
+    local success, data = pcall(function()
+        local store = DataStoreService:GetDataStore(DATASTORE_KEY)
+        return store:GetAsync("player_" .. player.UserId)
+    end)
+    if success and data then
+        return {
+            coins = data.coins or 0,
+            multiplier = data.multiplier or 1,
+            rebirths = data.rebirths or 0,
+            zone = data.zone or 1,
+        }
+    end
+    return default
+end
+
+function SimulatorCore.saveData(player: Player)
+    local data = playerData[player]
+    if not data then return end
+    pcall(function()
+        local store = DataStoreService:GetDataStore(DATASTORE_KEY)
+        store:SetAsync("player_" .. player.UserId, data)
+    end)
+end
+
+return SimulatorCore
+''',
+        "PetService.server.lua": '''-- PetService: Pet collection, equipping, and following
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local PetService = {}
+PetService.__index = PetService
+
+local playerPets: {[Player]: {owned: {[string]: boolean}, equipped: string?}} = {}
+
+local PET_DATA = {
+    {id = "dog", name = "Dog", rarity = "common", multiplier = 1.2},
+    {id = "cat", name = "Cat", rarity = "common", multiplier = 1.3},
+    {id = "dragon", name = "Dragon", rarity = "rare", multiplier = 2.0},
+    {id = "unicorn", name = "Unicorn", rarity = "epic", multiplier = 3.5},
+    {id = "phoenix", name = "Phoenix", rarity = "legendary", multiplier = 5.0},
+}
+
+local EGG_CHANCES = {
+    common = 0.60,
+    rare = 0.25,
+    epic = 0.10,
+    legendary = 0.05,
+}
+
+function PetService.init()
+    local remotes = Instance.new("Folder")
+    remotes.Name = "PetRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local hatchEgg = Instance.new("RemoteFunction")
+    hatchEgg.Name = "HatchEgg"
+    hatchEgg.Parent = remotes
+
+    local equipPet = Instance.new("RemoteFunction")
+    equipPet.Name = "EquipPet"
+    equipPet.Parent = remotes
+
+    hatchEgg.OnServerInvoke = function(player)
+        return PetService.hatch(player)
+    end
+
+    equipPet.OnServerInvoke = function(player, petId)
+        return PetService.equip(player, petId)
+    end
+
+    Players.PlayerAdded:Connect(function(player)
+        playerPets[player] = {owned = {}, equipped = nil}
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        playerPets[player] = nil
+    end)
+end
+
+function PetService.hatch(player: Player): (boolean, string)
+    local data = playerPets[player]
+    if not data then return false, "No data" end
+
+    -- Roll rarity
+    local roll = math.random()
+    local rarity = "common"
+    local cumulative = 0
+    for r, chance in EGG_CHANCES do
+        cumulative = cumulative + chance
+        if roll <= cumulative then
+            rarity = r
+            break
+        end
+    end
+
+    -- Pick pet of that rarity
+    local candidates = {}
+    for _, pet in PET_DATA do
+        if pet.rarity == rarity then
+            table.insert(candidates, pet)
+        end
+    end
+
+    if #candidates == 0 then return false, "No pets available" end
+    local pet = candidates[math.random(1, #candidates)]
+    data.owned[pet.id] = true
+
+    return true, pet.name .. " (" .. pet.rarity .. ")"
+end
+
+function PetService.equip(player: Player, petId: string): (boolean, string)
+    local data = playerPets[player]
+    if not data then return false, "No data" end
+    if not data.owned[petId] then return false, "Pet not owned" end
+
+    data.equipped = petId
+    return true, "Equipped " .. petId
+end
+
+function PetService.getEquippedMultiplier(player: Player): number
+    local data = playerPets[player]
+    if not data or not data.equipped then return 1 end
+
+    for _, pet in PET_DATA do
+        if pet.id == data.equipped then
+            return pet.multiplier
+        end
+    end
+    return 1
+end
+
+return PetService
+''',
+    },
+    "rpg": {
+        "QuestService.server.lua": '''-- QuestService: Quest tracking and completion
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local QuestService = {}
+QuestService.__index = QuestService
+
+local playerQuests: {[Player]: {active: {[string]: any}, completed: {[string]: boolean}}} = {}
+
+local QUEST_DATABASE = {
+    {
+        id = "q_slime_hunt",
+        name = "Slime Hunter",
+        description = "Defeat 5 slimes",
+        objective = {type = "kill", target = "Slime", count = 5},
+        reward = {coins = 100, xp = 50},
+    },
+    {
+        id = "q_gather_herbs",
+        name = "Herb Gathering",
+        description = "Collect 10 herbs",
+        objective = {type = "collect", target = "Herb", count = 10},
+        reward = {coins = 75, xp = 30},
+    },
+    {
+        id = "q_boss_fight",
+        name = "Boss Challenge",
+        description = "Defeat the Forest Guardian",
+        objective = {type = "kill", target = "ForestGuardian", count = 1},
+        reward = {coins = 500, xp = 200},
+    },
+}
+
+function QuestService.init()
+    local remotes = Instance.new("Folder")
+    remotes.Name = "QuestRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local acceptQuest = Instance.new("RemoteFunction")
+    acceptQuest.Name = "AcceptQuest"
+    acceptQuest.Parent = remotes
+
+    local getQuests = Instance.new("RemoteFunction")
+    getQuests.Name = "GetQuests"
+    getQuests.Parent = remotes
+
+    acceptQuest.OnServerInvoke = function(player, questId)
+        return QuestService.accept(player, questId)
+    end
+
+    getQuests.OnServerInvoke = function(player)
+        return QuestService.getAvailable(player)
+    end
+
+    Players.PlayerAdded:Connect(function(player)
+        playerQuests[player] = {active = {}, completed = {}}
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        playerQuests[player] = nil
+    end)
+end
+
+function QuestService.accept(player: Player, questId: string): (boolean, string)
+    local data = playerQuests[player]
+    if not data then return false, "No data" end
+    if data.completed[questId] then return false, "Already completed" end
+    if data.active[questId] then return false, "Already active" end
+
+    local quest = nil
+    for _, q in QUEST_DATABASE do
+        if q.id == questId then quest = q; break end
+    end
+    if not quest then return false, "Quest not found" end
+
+    data.active[questId] = {progress = 0, required = quest.objective.count}
+    return true, "Quest accepted: " .. quest.name
+end
+
+function QuestService.updateProgress(player: Player, objectiveType: string, target: string, amount: number?)
+    local data = playerQuests[player]
+    if not data then return end
+
+    for questId, progress in data.active do
+        local quest = nil
+        for _, q in QUEST_DATABASE do
+            if q.id == questId then quest = q; break end
+        end
+        if quest and quest.objective.type == objectiveType and quest.objective.target == target then
+            progress.progress = progress.progress + (amount or 1)
+            if progress.progress >= progress.required then
+                QuestService.complete(player, questId, quest)
+            end
+        end
+    end
+end
+
+function QuestService.complete(player: Player, questId: string, quest: any)
+    local data = playerQuests[player]
+    if not data then return end
+
+    data.active[questId] = nil
+    data.completed[questId] = true
+
+    -- Grant rewards
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local coins = leaderstats:FindFirstChild("Coins") or leaderstats:FindFirstChild("Cash")
+        if coins then coins.Value = coins.Value + (quest.reward.coins or 0) end
+        local xp = leaderstats:FindFirstChild("XP")
+        if xp then xp.Value = xp.Value + (quest.reward.xp or 0) end
+    end
+end
+
+function QuestService.getAvailable(player: Player): {}
+    local data = playerQuests[player]
+    if not data then return {} end
+
+    local available = {}
+    for _, quest in QUEST_DATABASE do
+        if not data.completed[quest.id] then
+            local active = data.active[quest.id]
+            table.insert(available, {
+                id = quest.id,
+                name = quest.name,
+                description = quest.description,
+                active = active ~= nil,
+                progress = active and active.progress or 0,
+                required = quest.objective.count,
+            })
+        end
+    end
+    return available
+end
+
+return QuestService
+''',
+        "DialogService.server.lua": '''-- DialogService: NPC dialog system with branching choices
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local DialogService = {}
+DialogService.__index = DialogService
+
+local DIALOGS = {
+    npc_elder = {
+        {text = "Welcome, adventurer! Our village needs your help.", choices = {
+            {text = "What happened?", next = 2},
+            {text = "Not interested.", next = nil},
+        }},
+        {text = "Monsters have been attacking from the forest. Can you help us?", choices = {
+            {text = "I will help! (Accept Quest)", action = "accept_quest:q_slime_hunt", next = 3},
+            {text = "Maybe later.", next = nil},
+        }},
+        {text = "Thank you, brave hero! Defeat the slimes in the forest.", choices = {}},
+    },
+    npc_merchant = {
+        {text = "Welcome to my shop! Want to see what I have?", choices = {
+            {text = "Show me your wares.", action = "open_shop", next = nil},
+            {text = "No thanks.", next = nil},
+        }},
+    },
+}
+
+function DialogService.init()
+    local remotes = Instance.new("Folder")
+    remotes.Name = "DialogRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local startDialog = Instance.new("RemoteFunction")
+    startDialog.Name = "StartDialog"
+    startDialog.Parent = remotes
+
+    local chooseOption = Instance.new("RemoteFunction")
+    chooseOption.Name = "ChooseOption"
+    chooseOption.Parent = remotes
+
+    startDialog.OnServerInvoke = function(player, npcId)
+        return DialogService.start(npcId)
+    end
+
+    chooseOption.OnServerInvoke = function(player, npcId, choiceIndex)
+        return DialogService.choose(player, npcId, choiceIndex)
+    end
+end
+
+function DialogService.start(npcId: string): any?
+    local dialog = DIALOGS[npcId]
+    if not dialog then return nil end
+    return dialog[1]
+end
+
+function DialogService.choose(player: Player, npcId: string, stepIndex: number): any?
+    local dialog = DIALOGS[npcId]
+    if not dialog or not dialog[stepIndex] then return nil end
+
+    local step = dialog[stepIndex]
+    return step
+end
+
+function DialogService.getDialog(npcId: string): any?
+    return DIALOGS[npcId]
+end
+
+return DialogService
+''',
+        "RPGStats.server.lua": '''-- RPGStats: Player stats, XP, and leveling system
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+
+local RPGStats = {}
+RPGStats.__index = RPGStats
+
+local DATASTORE_KEY = "RPGStats_v1"
+
+local playerStats: {[Player]: {level: number, xp: number, str: number, def: number, spd: number}} = {}
+
+local function xpForLevel(level: number): number
+    return math.floor(100 * level ^ 1.5)
+end
+
+function RPGStats.init()
+    Players.PlayerAdded:Connect(function(player)
+        local stats = RPGStats.loadStats(player)
+        playerStats[player] = stats
+
+        local leaderstats = Instance.new("Folder")
+        leaderstats.Name = "leaderstats"
+        leaderstats.Parent = player
+
+        local level = Instance.new("IntValue")
+        level.Name = "Level"
+        level.Value = stats.level
+        level.Parent = leaderstats
+
+        local xp = Instance.new("IntValue")
+        xp.Name = "XP"
+        xp.Value = stats.xp
+        xp.Parent = leaderstats
+
+        local coins = Instance.new("IntValue")
+        coins.Name = "Coins"
+        coins.Value = 0
+        coins.Parent = leaderstats
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        RPGStats.saveStats(player)
+        playerStats[player] = nil
+    end)
+end
+
+function RPGStats.addXP(player: Player, amount: number)
+    local stats = playerStats[player]
+    if not stats then return end
+
+    stats.xp = stats.xp + amount
+    while stats.xp >= xpForLevel(stats.level) do
+        stats.xp = stats.xp - xpForLevel(stats.level)
+        stats.level = stats.level + 1
+        stats.str = stats.str + 2
+        stats.def = stats.def + 1
+        stats.spd = stats.spd + 1
+    end
+
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local level = leaderstats:FindFirstChild("Level")
+        if level then level.Value = stats.level end
+        local xp = leaderstats:FindFirstChild("XP")
+        if xp then xp.Value = stats.xp end
+    end
+end
+
+function RPGStats.getStats(player: Player): any?
+    return playerStats[player]
+end
+
+function RPGStats.loadStats(player: Player): {level: number, xp: number, str: number, def: number, spd: number}
+    local default = {level = 1, xp = 0, str = 5, def = 3, spd = 3}
+    local success, data = pcall(function()
+        local store = DataStoreService:GetDataStore(DATASTORE_KEY)
+        return store:GetAsync("player_" .. player.UserId)
+    end)
+    if success and data then
+        return {
+            level = data.level or 1, xp = data.xp or 0,
+            str = data.str or 5, def = data.def or 3, spd = data.spd or 3,
+        }
+    end
+    return default
+end
+
+function RPGStats.saveStats(player: Player)
+    local stats = playerStats[player]
+    if not stats then return end
+    pcall(function()
+        local store = DataStoreService:GetDataStore(DATASTORE_KEY)
+        store:SetAsync("player_" .. player.UserId, stats)
+    end)
+end
+
+return RPGStats
+''',
+    },
+    "fps": {
+        "WeaponService.server.lua": '''-- WeaponService: FPS weapon handling (equip, fire, reload, damage)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local WeaponService = {}
+WeaponService.__index = WeaponService
+
+local WEAPONS = {
+    {id = "pistol", name = "Pistol", damage = 15, fireRate = 0.3, magSize = 12, reloadTime = 1.5, range = 100},
+    {id = "rifle", name = "Assault Rifle", damage = 20, fireRate = 0.1, magSize = 30, reloadTime = 2.0, range = 150},
+    {id = "shotgun", name = "Shotgun", damage = 50, fireRate = 0.8, magSize = 6, reloadTime = 2.5, range = 30},
+    {id = "sniper", name = "Sniper Rifle", damage = 80, fireRate = 1.5, magSize = 5, reloadTime = 3.0, range = 300},
+}
+
+local playerWeapons: {[Player]: {equipped: string, ammo: {[string]: number}}} = {}
+
+function WeaponService.init()
+    local remotes = Instance.new("Folder")
+    remotes.Name = "WeaponRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local fireRemote = Instance.new("RemoteEvent")
+    fireRemote.Name = "Fire"
+    fireRemote.Parent = remotes
+
+    local reloadRemote = Instance.new("RemoteEvent")
+    reloadRemote.Name = "Reload"
+    reloadRemote.Parent = remotes
+
+    local equipRemote = Instance.new("RemoteEvent")
+    equipRemote.Name = "Equip"
+    equipRemote.Parent = remotes
+
+    fireRemote.OnServerEvent:Connect(function(player, direction)
+        WeaponService.fire(player, direction)
+    end)
+
+    reloadRemote.OnServerEvent:Connect(function(player)
+        WeaponService.reload(player)
+    end)
+
+    equipRemote.OnServerEvent:Connect(function(player, weaponId)
+        WeaponService.equip(player, weaponId)
+    end)
+
+    Players.PlayerAdded:Connect(function(player)
+        local ammo = {}
+        for _, w in WEAPONS do
+            ammo[w.id] = w.magSize
+        end
+        playerWeapons[player] = {equipped = "pistol", ammo = ammo}
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        playerWeapons[player] = nil
+    end)
+end
+
+function WeaponService.fire(player: Player, direction: Vector3)
+    local data = playerWeapons[player]
+    if not data then return end
+
+    local weapon = nil
+    for _, w in WEAPONS do
+        if w.id == data.equipped then weapon = w; break end
+    end
+    if not weapon then return end
+
+    if (data.ammo[weapon.id] or 0) <= 0 then return end
+    data.ammo[weapon.id] = data.ammo[weapon.id] - 1
+
+    local character = player.Character
+    if not character then return end
+    local head = character:FindFirstChild("Head")
+    if not head then return end
+
+    -- Raycast for hit detection
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = {character}
+
+    local result = workspace:Raycast(head.Position, direction.Unit * weapon.range, rayParams)
+    if result and result.Instance then
+        local hitModel = result.Instance:FindFirstAncestorOfClass("Model")
+        if hitModel then
+            local humanoid = hitModel:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                humanoid:TakeDamage(weapon.damage)
+
+                -- Track kills
+                if humanoid.Health <= 0 then
+                    local leaderstats = player:FindFirstChild("leaderstats")
+                    if leaderstats then
+                        local kills = leaderstats:FindFirstChild("Kills")
+                        if kills then kills.Value = kills.Value + 1 end
+                    end
+                end
+            end
+        end
+    end
+end
+
+function WeaponService.reload(player: Player)
+    local data = playerWeapons[player]
+    if not data then return end
+
+    local weapon = nil
+    for _, w in WEAPONS do
+        if w.id == data.equipped then weapon = w; break end
+    end
+    if not weapon then return end
+
+    data.ammo[weapon.id] = weapon.magSize
+end
+
+function WeaponService.equip(player: Player, weaponId: string)
+    local data = playerWeapons[player]
+    if not data then return end
+    data.equipped = weaponId
+end
+
+return WeaponService
+''',
+        "FPSLeaderboard.server.lua": '''-- FPSLeaderboard: Kill/death tracking and match scoring
+local Players = game:GetService("Players")
+
+local FPSLeaderboard = {}
+FPSLeaderboard.__index = FPSLeaderboard
+
+function FPSLeaderboard.init()
+    Players.PlayerAdded:Connect(function(player)
+        local leaderstats = Instance.new("Folder")
+        leaderstats.Name = "leaderstats"
+        leaderstats.Parent = player
+
+        local kills = Instance.new("IntValue")
+        kills.Name = "Kills"
+        kills.Value = 0
+        kills.Parent = leaderstats
+
+        local deaths = Instance.new("IntValue")
+        deaths.Name = "Deaths"
+        deaths.Value = 0
+        deaths.Parent = leaderstats
+
+        player.CharacterAdded:Connect(function(character)
+            local humanoid = character:WaitForChild("Humanoid")
+            humanoid.Died:Connect(function()
+                deaths.Value = deaths.Value + 1
+            end)
+        end)
+    end)
+end
+
+function FPSLeaderboard.addKill(player: Player)
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local kills = leaderstats:FindFirstChild("Kills")
+        if kills then kills.Value = kills.Value + 1 end
+    end
+end
+
+function FPSLeaderboard.getKDR(player: Player): number
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if not leaderstats then return 0 end
+    local kills = leaderstats:FindFirstChild("Kills")
+    local deaths = leaderstats:FindFirstChild("Deaths")
+    if not kills or not deaths then return 0 end
+    if deaths.Value == 0 then return kills.Value end
+    return kills.Value / deaths.Value
+end
+
+return FPSLeaderboard
+''',
+    },
+    "survival": {
+        "SurvivalManager.server.lua": '''-- SurvivalManager: Day/night cycle, hunger, and survival mechanics
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+
+local SurvivalManager = {}
+SurvivalManager.__index = SurvivalManager
+
+local DAY_LENGTH = 300 -- seconds for full day/night cycle
+local currentTime = 8 -- start at 8 AM (0-24 scale)
+
+local playerSurvival: {[Player]: {hunger: number, thirst: number, health: number}} = {}
+
+function SurvivalManager.init()
+    local timeValue = Instance.new("NumberValue")
+    timeValue.Name = "GameTime"
+    timeValue.Value = currentTime
+    timeValue.Parent = ReplicatedStorage
+
+    Players.PlayerAdded:Connect(function(player)
+        playerSurvival[player] = {hunger = 100, thirst = 100, health = 100}
+
+        local leaderstats = Instance.new("Folder")
+        leaderstats.Name = "leaderstats"
+        leaderstats.Parent = player
+
+        local kills = Instance.new("IntValue")
+        kills.Name = "Kills"
+        kills.Value = 0
+        kills.Parent = leaderstats
+
+        local survived = Instance.new("IntValue")
+        survived.Name = "Waves"
+        survived.Value = 0
+        survived.Parent = leaderstats
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        playerSurvival[player] = nil
+    end)
+
+    -- Day/night cycle
+    task.spawn(function()
+        while true do
+            task.wait(1)
+            currentTime = currentTime + (24 / DAY_LENGTH)
+            if currentTime >= 24 then currentTime = 0 end
+
+            Lighting.ClockTime = currentTime
+            local tv = ReplicatedStorage:FindFirstChild("GameTime")
+            if tv then tv.Value = currentTime end
+        end
+    end)
+
+    -- Hunger/thirst drain
+    task.spawn(function()
+        while true do
+            task.wait(10)
+            for player, data in playerSurvival do
+                data.hunger = math.max(0, data.hunger - 2)
+                data.thirst = math.max(0, data.thirst - 3)
+
+                if data.hunger <= 0 or data.thirst <= 0 then
+                    local character = player.Character
+                    if character then
+                        local humanoid = character:FindFirstChildOfClass("Humanoid")
+                        if humanoid and humanoid.Health > 0 then
+                            humanoid:TakeDamage(5)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+
+function SurvivalManager.feed(player: Player, amount: number)
+    local data = playerSurvival[player]
+    if data then
+        data.hunger = math.min(100, data.hunger + amount)
+    end
+end
+
+function SurvivalManager.drink(player: Player, amount: number)
+    local data = playerSurvival[player]
+    if data then
+        data.thirst = math.min(100, data.thirst + amount)
+    end
+end
+
+function SurvivalManager.getStatus(player: Player): {hunger: number, thirst: number}?
+    return playerSurvival[player]
+end
+
+function SurvivalManager.isNight(): boolean
+    return currentTime >= 20 or currentTime < 6
+end
+
+return SurvivalManager
+''',
+    },
+    "horror": {
+        "HorrorManager.server.lua": '''-- HorrorManager: Horror game mechanics (darkness, jumpscares, monster AI)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+
+local HorrorManager = {}
+HorrorManager.__index = HorrorManager
+
+local playerState: {[Player]: {sanity: number, hasFlashlight: boolean, keysFound: number}} = {}
+local KEYS_TO_ESCAPE = 5
+
+function HorrorManager.init()
+    -- Dark ambient lighting
+    Lighting.Brightness = 0.2
+    Lighting.Ambient = Color3.fromRGB(10, 10, 15)
+    Lighting.OutdoorAmbient = Color3.fromRGB(10, 10, 15)
+    Lighting.ClockTime = 0
+    Lighting.FogEnd = 80
+    Lighting.FogColor = Color3.fromRGB(5, 5, 10)
+
+    local remotes = Instance.new("Folder")
+    remotes.Name = "HorrorRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local toggleFlashlight = Instance.new("RemoteEvent")
+    toggleFlashlight.Name = "ToggleFlashlight"
+    toggleFlashlight.Parent = remotes
+
+    local collectKey = Instance.new("RemoteFunction")
+    collectKey.Name = "CollectKey"
+    collectKey.Parent = remotes
+
+    toggleFlashlight.OnServerEvent:Connect(function(player)
+        HorrorManager.toggleFlashlight(player)
+    end)
+
+    collectKey.OnServerInvoke = function(player)
+        return HorrorManager.pickupKey(player)
+    end
+
+    Players.PlayerAdded:Connect(function(player)
+        playerState[player] = {sanity = 100, hasFlashlight = true, keysFound = 0}
+
+        player.CharacterAdded:Connect(function(character)
+            -- Add flashlight
+            local flashlight = Instance.new("SpotLight")
+            flashlight.Name = "Flashlight"
+            flashlight.Brightness = 2
+            flashlight.Range = 40
+            flashlight.Angle = 45
+            flashlight.Enabled = false
+
+            local head = character:WaitForChild("Head")
+            flashlight.Parent = head
+        end)
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        playerState[player] = nil
+    end)
+
+    -- Sanity drain in darkness
+    task.spawn(function()
+        while true do
+            task.wait(5)
+            for player, state in playerState do
+                local character = player.Character
+                if character then
+                    local head = character:FindFirstChild("Head")
+                    if head then
+                        local flashlight = head:FindFirstChild("Flashlight")
+                        if not flashlight or not flashlight.Enabled then
+                            state.sanity = math.max(0, state.sanity - 3)
+                        else
+                            state.sanity = math.min(100, state.sanity + 1)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+
+function HorrorManager.toggleFlashlight(player: Player)
+    local state = playerState[player]
+    if not state or not state.hasFlashlight then return end
+
+    local character = player.Character
+    if not character then return end
+    local head = character:FindFirstChild("Head")
+    if not head then return end
+    local flashlight = head:FindFirstChild("Flashlight")
+    if flashlight then
+        flashlight.Enabled = not flashlight.Enabled
+    end
+end
+
+function HorrorManager.pickupKey(player: Player): (boolean, string)
+    local state = playerState[player]
+    if not state then return false, "No state" end
+
+    state.keysFound = state.keysFound + 1
+    if state.keysFound >= KEYS_TO_ESCAPE then
+        return true, "You found all keys! Run to the exit!"
+    end
+    return true, "Key " .. state.keysFound .. "/" .. KEYS_TO_ESCAPE .. " found"
+end
+
+function HorrorManager.getSanity(player: Player): number
+    local state = playerState[player]
+    return state and state.sanity or 0
+end
+
+return HorrorManager
+''',
+    },
+    "racing": {
+        "RacingService.server.lua": '''-- RacingService: Racing game with laps, checkpoints, and timing
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local RacingService = {}
+RacingService.__index = RacingService
+
+local TOTAL_LAPS = 3
+local raceState: {[Player]: {lap: number, checkpoint: number, startTime: number, bestTime: number, finished: boolean}} = {}
+local totalCheckpoints = 0
+
+function RacingService.init()
+    local remotes = Instance.new("Folder")
+    remotes.Name = "RacingRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local hitCheckpoint = Instance.new("RemoteEvent")
+    hitCheckpoint.Name = "HitCheckpoint"
+    hitCheckpoint.Parent = remotes
+
+    hitCheckpoint.OnServerEvent:Connect(function(player, checkpointNum)
+        RacingService.onCheckpoint(player, checkpointNum)
+    end)
+
+    -- Count checkpoints in workspace
+    local checkpoints = workspace:FindFirstChild("Checkpoints")
+    if checkpoints then
+        totalCheckpoints = #checkpoints:GetChildren()
+    end
+
+    Players.PlayerAdded:Connect(function(player)
+        raceState[player] = {lap = 0, checkpoint = 0, startTime = 0, bestTime = 0, finished = false}
+
+        local leaderstats = Instance.new("Folder")
+        leaderstats.Name = "leaderstats"
+        leaderstats.Parent = player
+
+        local lap = Instance.new("IntValue")
+        lap.Name = "Lap"
+        lap.Value = 0
+        lap.Parent = leaderstats
+
+        local best = Instance.new("NumberValue")
+        best.Name = "Best"
+        best.Value = 0
+        best.Parent = leaderstats
+    end)
+
+    Players.PlayerRemoving:Connect(function(player)
+        raceState[player] = nil
+    end)
+end
+
+function RacingService.startRace(player: Player)
+    local state = raceState[player]
+    if not state then return end
+
+    state.lap = 1
+    state.checkpoint = 0
+    state.startTime = tick()
+    state.finished = false
+
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if leaderstats then
+        local lap = leaderstats:FindFirstChild("Lap")
+        if lap then lap.Value = 1 end
+    end
+end
+
+function RacingService.onCheckpoint(player: Player, checkpointNum: number)
+    local state = raceState[player]
+    if not state or state.finished then return end
+
+    -- Must hit checkpoints in order
+    if checkpointNum ~= state.checkpoint + 1 then return end
+    state.checkpoint = checkpointNum
+
+    -- Completed a lap
+    if state.checkpoint >= totalCheckpoints then
+        state.checkpoint = 0
+        state.lap = state.lap + 1
+
+        local leaderstats = player:FindFirstChild("leaderstats")
+        if leaderstats then
+            local lap = leaderstats:FindFirstChild("Lap")
+            if lap then lap.Value = state.lap end
+        end
+
+        if state.lap > TOTAL_LAPS then
+            local elapsed = tick() - state.startTime
+            state.finished = true
+
+            if state.bestTime == 0 or elapsed < state.bestTime then
+                state.bestTime = elapsed
+                if leaderstats then
+                    local best = leaderstats:FindFirstChild("Best")
+                    if best then best.Value = math.floor(elapsed * 10) / 10 end
+                end
+            end
+        end
+    end
+end
+
+function RacingService.getRaceState(player: Player): any?
+    return raceState[player]
+end
+
+return RacingService
+''',
+        "VehicleService.server.lua": '''-- VehicleService: Vehicle spawning and management
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local VehicleService = {}
+VehicleService.__index = VehicleService
+
+local playerVehicles: {[Player]: Model?} = {}
+
+local VEHICLE_STATS = {
+    {id = "kart", name = "Go-Kart", speed = 60, turnSpeed = 5},
+    {id = "sports", name = "Sports Car", speed = 100, turnSpeed = 4},
+    {id = "truck", name = "Monster Truck", speed = 45, turnSpeed = 3},
+}
+
+function VehicleService.init()
+    local remotes = Instance.new("Folder")
+    remotes.Name = "VehicleRemotes"
+    remotes.Parent = ReplicatedStorage
+
+    local spawnVehicle = Instance.new("RemoteFunction")
+    spawnVehicle.Name = "SpawnVehicle"
+    spawnVehicle.Parent = remotes
+
+    spawnVehicle.OnServerInvoke = function(player, vehicleId)
+        return VehicleService.spawn(player, vehicleId)
+    end
+
+    Players.PlayerRemoving:Connect(function(player)
+        VehicleService.despawn(player)
+        playerVehicles[player] = nil
+    end)
+end
+
+function VehicleService.spawn(player: Player, vehicleId: string): (boolean, string)
+    -- Despawn existing
+    VehicleService.despawn(player)
+
+    local vehicleData = nil
+    for _, v in VEHICLE_STATS do
+        if v.id == vehicleId then vehicleData = v; break end
+    end
+    if not vehicleData then return false, "Vehicle not found" end
+
+    local character = player.Character
+    if not character then return false, "No character" end
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false, "No root part" end
+
+    -- Look for vehicle template in ServerStorage
+    local templates = ServerStorage:FindFirstChild("Vehicles")
+    if templates then
+        local template = templates:FindFirstChild(vehicleId)
+        if template then
+            local vehicle = template:Clone()
+            vehicle.Name = player.Name .. "_Vehicle"
+            vehicle:PivotTo(hrp.CFrame + Vector3.new(0, 5, 10))
+            vehicle.Parent = workspace
+            playerVehicles[player] = vehicle
+            return true, "Spawned " .. vehicleData.name
+        end
+    end
+
+    return false, "Vehicle template not found in ServerStorage/Vehicles/"
+end
+
+function VehicleService.despawn(player: Player)
+    local vehicle = playerVehicles[player]
+    if vehicle then
+        vehicle:Destroy()
+        playerVehicles[player] = nil
+    end
+end
+
+return VehicleService
+''',
+    },
 }
 
 # Common system templates available for all genres
